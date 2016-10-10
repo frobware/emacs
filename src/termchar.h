@@ -157,6 +157,10 @@ struct tty_display_info
   const char *TS_set_foreground;
   const char *TS_set_background;
 
+  /* Support for 24bit RGB color terminals. */
+  const char *TS_set_rgb_foreground;
+  const char *TS_set_rgb_background;
+
   int TF_hazeltine;             /* termcap hz flag. */
   int TF_insmode_motion;        /* termcap mi flag: can move while in insert mode. */
   int TF_standout_motion;       /* termcap mi flag: can move while in standout mode. */

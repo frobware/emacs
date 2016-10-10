@@ -382,7 +382,7 @@ static ptrdiff_t lface_id_to_name_size;
 
 /* TTY color-related functions (defined in tty-colors.el).  */
 
-static Lisp_Object Qtty_color_desc, Qtty_color_by_index, Qtty_color_standard_values;
+static Lisp_Object Qtty_color_desc, Qtty_color_by_index, Qtty_color_standard_values, Qtty_color_canonicalize;
 
 /* The name of the function used to compute colors on TTYs.  */
 
@@ -943,54 +943,80 @@ tty_lookup_color (struct frame *f, Lisp_Object color, XColor *tty_color,
   if (!STRINGP (color) || NILP (Ffboundp (Qtty_color_desc)))
     return 0;
 
-  XSETFRAME (frame, f);
-
-  color_desc = call2 (Qtty_color_desc, color, frame);
-  if (CONSP (color_desc) && CONSP (XCDR (color_desc)))
+  if (f->output_method == output_termcap
+      && f->output_data.tty->display_info->TS_set_rgb_foreground
+      && !NILP (Ffboundp (Qtty_color_standard_values)))
     {
-      Lisp_Object rgb;
+      /* Terminal supports 3 byte RGB colors. */
+      if (!NILP (Ffboundp (Qtty_color_canonicalize)))
+        color = call1(Qtty_color_canonicalize, color);
 
-      if (! INTEGERP (XCAR (XCDR (color_desc))))
-	return 0;
+      color_desc = call1 (Qtty_color_standard_values, color);
+      if (! parse_rgb_list (color_desc, tty_color))
+        return 0;
 
-      tty_color->pixel = XINT (XCAR (XCDR (color_desc)));
+      /* Map XColor to 3 byte values. */
+      tty_color->pixel = 1 << 24 /* Set bit 24 to mark RGB values. */
+        | (tty_color->red / 256) << 16
+        | (tty_color->green / 256) << 8
+        | (tty_color->blue / 256);
 
-      rgb = XCDR (XCDR (color_desc));
-      if (! parse_rgb_list (rgb, tty_color))
-	return 0;
-
-      /* Should we fill in STD_COLOR too?  */
       if (std_color)
-	{
-	  /* Default STD_COLOR to the same as TTY_COLOR.  */
-	  *std_color = *tty_color;
-
-	  /* Do a quick check to see if the returned descriptor is
-	     actually _exactly_ equal to COLOR, otherwise we have to
-	     lookup STD_COLOR separately.  If it's impossible to lookup
-	     a standard color, we just give up and use TTY_COLOR.  */
-	  if ((!STRINGP (XCAR (color_desc))
-	       || NILP (Fstring_equal (color, XCAR (color_desc))))
-	      && !NILP (Ffboundp (Qtty_color_standard_values)))
-	    {
-	      /* Look up STD_COLOR separately.  */
-	      rgb = call1 (Qtty_color_standard_values, color);
-	      if (! parse_rgb_list (rgb, std_color))
-		return 0;
-	    }
-	}
+        *std_color = *tty_color;
 
       return 1;
     }
-  else if (NILP (Fsymbol_value (intern ("tty-defined-color-alist"))))
-    /* We were called early during startup, and the colors are not
-       yet set up in tty-defined-color-alist.  Don't return a failure
-       indication, since this produces the annoying "Unable to
-       load color" messages in the *Messages* buffer.  */
-    return 1;
   else
-    /* tty-color-desc seems to have returned a bad value.  */
-    return 0;
+    {
+      XSETFRAME (frame, f);
+
+      color_desc = call2 (Qtty_color_desc, color, frame);
+      if (CONSP (color_desc) && CONSP (XCDR (color_desc)))
+        {
+          Lisp_Object rgb;
+
+          if (! INTEGERP (XCAR (XCDR (color_desc))))
+            return 0;
+
+          tty_color->pixel = XINT (XCAR (XCDR (color_desc)));
+
+          rgb = XCDR (XCDR (color_desc));
+          if (! parse_rgb_list (rgb, tty_color))
+            return 0;
+
+          /* Should we fill in STD_COLOR too?  */
+          if (std_color)
+            {
+              /* Default STD_COLOR to the same as TTY_COLOR.  */
+              *std_color = *tty_color;
+
+              /* Do a quick check to see if the returned descriptor is
+                 actually _exactly_ equal to COLOR, otherwise we have to
+                 lookup STD_COLOR separately.  If it's impossible to lookup
+                 a standard color, we just give up and use TTY_COLOR.  */
+              if ((!STRINGP (XCAR (color_desc))
+                   || NILP (Fstring_equal (color, XCAR (color_desc))))
+                  && !NILP (Ffboundp (Qtty_color_standard_values)))
+                {
+                  /* Look up STD_COLOR separately.  */
+                  rgb = call1 (Qtty_color_standard_values, color);
+                  if (! parse_rgb_list (rgb, std_color))
+                    return 0;
+                }
+            }
+
+          return 1;
+        }
+      else if (NILP (Fsymbol_value (intern ("tty-defined-color-alist"))))
+        /* We were called early during startup, and the colors are not
+           yet set up in tty-defined-color-alist.  Don't return a failure
+           indication, since this produces the annoying "Unable to
+           load color" messages in the *Messages* buffer.  */
+        return 1;
+      else
+        /* tty-color-desc seems to have returned a bad value.  */
+        return 0;
+    }
 }
 
 /* A version of defined_color for non-X frames.  */
@@ -1008,7 +1034,9 @@ tty_defined_color (struct frame *f, const char *color_name,
   color_def->green = 0;
 
   if (*color_name)
-    status = tty_lookup_color (f, build_string (color_name), color_def, NULL);
+    {
+      status = tty_lookup_color (f, build_string (color_name), color_def, NULL);
+    }
 
   if (color_def->pixel == FACE_TTY_DEFAULT_COLOR && *color_name)
     {
@@ -5780,6 +5808,7 @@ map_tty_color (struct frame *f, struct face *face,
   unsigned long default_pixel =
     foreground_p ? FACE_TTY_DEFAULT_FG_COLOR : FACE_TTY_DEFAULT_BG_COLOR;
   unsigned long pixel = default_pixel;
+  XColor true_color;
 #ifdef MSDOS
   unsigned long default_other_pixel =
     foreground_p ? FACE_TTY_DEFAULT_BG_COLOR : FACE_TTY_DEFAULT_FG_COLOR;
@@ -5798,7 +5827,18 @@ map_tty_color (struct frame *f, struct face *face,
     {
       /* Associations in tty-defined-color-alist are of the form
 	 (NAME INDEX R G B).  We need the INDEX part.  */
-      pixel = XINT (XCAR (XCDR (def)));
+      if (f->output_method == output_termcap
+          && f->output_data.tty->display_info->TS_set_rgb_foreground
+          && parse_rgb_list (XCDR (XCDR(def)), &true_color))
+        {
+          /* Map XColor to 3 byte values. */
+          pixel = 1 << 24 /* Set bit 24 to mark RGB values. */
+            | (true_color.red / 256) << 16
+            | (true_color.green / 256) << 8
+            | (true_color.blue / 256);
+        }
+       else
+         pixel = XINT (XCAR (XCDR (def)));
     }
 
   if (pixel == default_pixel && STRINGP (color))
@@ -6460,6 +6500,7 @@ syms_of_xfaces (void)
   DEFSYM (Qwindow_divider, "window-divider");
   DEFSYM (Qwindow_divider_first_pixel, "window-divider-first-pixel");
   DEFSYM (Qwindow_divider_last_pixel, "window-divider-last-pixel");
+  DEFSYM (Qtty_color_canonicalize, "tty-color-canonicalize");
   DEFSYM (Qtty_color_desc, "tty-color-desc");
   DEFSYM (Qtty_color_standard_values, "tty-color-standard-values");
   DEFSYM (Qtty_color_by_index, "tty-color-by-index");

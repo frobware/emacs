@@ -674,6 +674,15 @@ versions of xterm."
     ;; are more colors to support, compute them now.
     (when (> ncolors 0)
       (cond
+       ((= (display-color-cells (selected-frame)) 16777216)	; 24-bit xterm
+        (let ((idx (length xterm-standard-colors)))
+          ;; Insert standard X colors after the standard xterm ones
+          (mapc (lambda (color)
+                       (if (not (assoc (car color) xterm-standard-colors))
+                           (progn
+                             (tty-color-define (car color) idx (cdr color))
+                             (setq idx (1+ idx)))))
+                color-name-rgb-alist)))
        ((= ncolors 240)	; 256-color xterm
 	;; 216 non-gray colors first
 	(let ((r 0) (g 0) (b 0))

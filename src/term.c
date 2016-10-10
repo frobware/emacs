@@ -1915,18 +1915,40 @@ turn_on_face (struct frame *f, int face_id)
       const char *ts;
       char *p;
 
-      ts = tty->standout_mode ? tty->TS_set_background : tty->TS_set_foreground;
+      if (face_tty_specified_24_bit_color(fg))
+        ts = tty->standout_mode ? tty->TS_set_rgb_background : tty->TS_set_rgb_foreground;
+      else
+        ts = tty->standout_mode ? tty->TS_set_background : tty->TS_set_foreground;
       if (face_tty_specified_color (fg) && ts)
 	{
-          p = tparam (ts, NULL, 0, fg, 0, 0, 0);
+          if (!face_tty_specified_24_bit_color(fg))
+            p = tparam (ts, NULL, 0, fg, 0, 0, 0);
+          else
+            {
+              const unsigned char r = (fg >> 16) & 0xFF,
+                g = (fg >> 8) & 0xFF,
+                b = fg & 0xFF;
+              p = tparam (ts, NULL, 0, (int)r, (int)g, (int)b, 0);
+            }
 	  OUTPUT (tty, p);
 	  xfree (p);
 	}
 
-      ts = tty->standout_mode ? tty->TS_set_foreground : tty->TS_set_background;
+      if (face_tty_specified_24_bit_color(bg))
+        ts = tty->standout_mode ? tty->TS_set_rgb_foreground : tty->TS_set_rgb_background;
+      else
+        ts = tty->standout_mode ? tty->TS_set_foreground : tty->TS_set_background;
       if (face_tty_specified_color (bg) && ts)
 	{
-          p = tparam (ts, NULL, 0, bg, 0, 0, 0);
+          if (!face_tty_specified_24_bit_color(bg))
+            p = tparam (ts, NULL, 0, bg, 0, 0, 0);
+          else
+            {
+              const unsigned char r = (bg >> 16) & 0xFF,
+                g = (bg >> 8) & 0xFF,
+                b = bg & 0xFF;
+              p = tparam (ts, NULL, 0, (int)r, (int)g, (int)b, 0);
+          }
 	  OUTPUT (tty, p);
 	  xfree (p);
 	}
@@ -2028,6 +2050,8 @@ TERMINAL does not refer to a text terminal.  */)
   struct terminal *t = get_tty_terminal (terminal, 0);
   if (!t)
     return make_number (0);
+  else if (t->display_info.tty->TS_set_rgb_foreground)
+    return make_number (16777216); /* 24 bit True Color */
   else
     return make_number (t->display_info.tty->TN_max_colors);
 }
@@ -2043,6 +2067,8 @@ static int default_no_color_video;
 static char *default_orig_pair;
 static char *default_set_foreground;
 static char *default_set_background;
+static char *default_set_rgb_foreground;
+static char *default_set_rgb_background;
 
 /* Save or restore the default color-related capabilities of this
    terminal.  */
@@ -2055,6 +2081,8 @@ tty_default_color_capabilities (struct tty_display_info *tty, bool save)
       dupstring (&default_orig_pair, tty->TS_orig_pair);
       dupstring (&default_set_foreground, tty->TS_set_foreground);
       dupstring (&default_set_background, tty->TS_set_background);
+      dupstring (&default_set_rgb_foreground, tty->TS_set_rgb_foreground);
+      dupstring (&default_set_rgb_background, tty->TS_set_rgb_background);
       default_max_colors = tty->TN_max_colors;
       default_max_pairs = tty->TN_max_pairs;
       default_no_color_video = tty->TN_no_color_video;
@@ -2064,6 +2092,8 @@ tty_default_color_capabilities (struct tty_display_info *tty, bool save)
       tty->TS_orig_pair = default_orig_pair;
       tty->TS_set_foreground = default_set_foreground;
       tty->TS_set_background = default_set_background;
+      tty->TS_set_rgb_foreground = default_set_rgb_foreground;
+      tty->TS_set_rgb_background = default_set_rgb_background;
       tty->TN_max_colors = default_max_colors;
       tty->TN_max_pairs = default_max_pairs;
       tty->TN_no_color_video = default_no_color_video;
@@ -2088,6 +2118,7 @@ tty_setup_colors (struct tty_display_info *tty, int mode)
 	tty->TN_max_pairs = 0;
 	tty->TN_no_color_video = 0;
 	tty->TS_set_foreground = tty->TS_set_background = tty->TS_orig_pair = NULL;
+        tty->TS_set_rgb_foreground = tty->TS_set_rgb_background = NULL;
 	break;
       case 0:	 /* default colors, if any */
       default:
@@ -2102,10 +2133,29 @@ tty_setup_colors (struct tty_display_info *tty, int mode)
 	tty->TS_set_foreground = "\033[3%dm";
 	tty->TS_set_background = "\033[4%dm";
 #endif
+        tty->TS_set_rgb_foreground = NULL;
+        tty->TS_set_rgb_background = NULL;
 	tty->TN_max_colors = 8;
 	tty->TN_max_pairs = 64;
 	tty->TN_no_color_video = 0;
 	break;
+      case 16777216: /* RGB colors */
+        tty->TS_orig_pair = "\033[0m";
+#ifdef TERMINFO
+	tty->TS_set_foreground = "\033[3%p1%dm";
+	tty->TS_set_background = "\033[4%p1%dm";
+        tty->TS_set_rgb_foreground = "\033[38;2;%p1%d;%p2%d;%p3%dm";
+        tty->TS_set_rgb_background = "\033[48;2;%p1%d;%p2%d;%p3%dm";
+#else
+	tty->TS_set_foreground = "\033[3%dm";
+	tty->TS_set_background = "\033[4%dm";
+        tty->TS_set_rgb_foreground = "\033[38;2;%d;%d;%dm";
+        tty->TS_set_rgb_background = "\033[48;2;%d;%d;%dm";
+#endif
+        tty->TN_max_colors = 16777216;
+        /*tty->TN_max_pairs = 64; TODO */
+	tty->TN_no_color_video = 0;
+        break;
     }
 }
 
@@ -4201,6 +4251,36 @@ use the Bourne shell command `TERM=... export TERM' (C-shell:\n\
       tty->TN_no_color_video = tgetnum ("NC");
       if (tty->TN_no_color_video == -1)
         tty->TN_no_color_video = 0;
+
+      /* TODO Reliable way to detect: Konsole, iTerm2, st */
+      if (getenv ("KONSOLE_DBUS_SESSION"))
+        {
+          /* TODO This should be extracted from terminfo/termcap. */
+#ifdef TERMINFO
+          tty->TS_set_rgb_foreground = "\033[38;2;%p1%d;%p2%d;%p3%dm";
+          tty->TS_set_rgb_background = "\033[48;2;%p1%d;%p2%d;%p3%dm";
+#else
+          tty->TS_set_rgb_foreground = "\033[38;2;%d;%d;%dm";
+          tty->TS_set_rgb_background = "\033[48;2;%d;%d;%dm";
+#endif
+        }
+      else if (getenv ("ITERM_24BIT"))
+        {
+          /* XXX chopps use ITU T.421 ':' separator */
+          /* TODO This should be extracted from terminfo/termcap. */
+#ifdef TERMINFO
+          tty->TS_set_rgb_foreground = "\033[38:2:%p1%d:%p2%d:%p3%dm";
+          tty->TS_set_rgb_background = "\033[48:2:%p1%d:%p2%d:%p3%dm";
+#else
+          tty->TS_set_rgb_foreground = "\033[38:2:%d:%d:%dm";
+          tty->TS_set_rgb_background = "\033[48:2:%d:%d:%dm";
+#endif
+        }
+      else
+        {
+          tty->TS_set_rgb_foreground = NULL;
+          tty->TS_set_rgb_background = NULL;
+        }
     }
 
   tty_default_color_capabilities (tty, 1);

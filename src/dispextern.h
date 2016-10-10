@@ -1739,9 +1739,15 @@ struct face
 INLINE bool
 face_tty_specified_color (unsigned long color)
 {
-  return color < FACE_TTY_DEFAULT_BG_COLOR;
+  return (color < FACE_TTY_DEFAULT_BG_COLOR);
 }
 
+INLINE bool
+face_tty_specified_24_bit_color (unsigned long color)
+{
+  /* 24 bit colors have 24th but not 25th bit set */
+  return ((color & (0x03 << 24)) == (0x01 << 24));
+}
 /* Non-zero if FACE was realized for unibyte use.  */
 
 #define FACE_UNIBYTE_P(FACE) ((FACE)->charset < 0)
